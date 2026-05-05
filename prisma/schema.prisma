@@ -1,0 +1,137 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id             String          @id @default(uuid())
+  email          String          @unique
+  passwordHash   String?
+  isVerified     Boolean         @default(false)
+  tier           String          @default("free")
+  createdAt      DateTime        @default(now())
+  sessions       Session[]
+  executions     Execution[]
+  whitelistTier  WhitelistTier?
+  whitelistEntry WhitelistEntry?
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  email     String
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model Session {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String
+  expiresAt        DateTime
+  ip               String?
+  userAgent        String?
+  isRevoked        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(uuid())
+  event     String
+  metadata  String?
+  ip        String?
+  userId    String?
+  createdAt DateTime @default(now())
+}
+
+model Execution {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gameId    String
+  script    String
+  status    String   @default("queued")
+  logs      String   @default("")
+  createdAt DateTime @default(now())
+}
+
+model Server {
+  id          String   @id @default(uuid())
+  gameId      String
+  game        Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  name        String
+  status      String   @default("online")
+  playerCount Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model Game {
+  id          String   @id @default(uuid())
+  name        String
+  placeId     String   @unique
+  description String   @default("")
+  thumbnail   String   @default("")
+  playerCount Int      @default(0)
+  status      String   @default("online")
+  servers     Server[]
+  createdAt   DateTime @default(now())
+}
+
+model WhitelistTier {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier      String   @default("free")
+  gamesUsed Int      @default(0)
+  joinedAt  DateTime @default(now())
+}
+
+model Script {
+  id          String   @id @default(uuid())
+  name        String
+  description String   @default("")
+  code        String
+  category    String   @default("general")
+  isPublic    Boolean  @default(true)
+  authorId    String?
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model WhitelistEntry {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  robloxUsername String   @unique
+  robloxId       String?
+  robloxAvatar   String?
+  robloxDisplay  String?
+  tier           String   @default("free")
+  source         String   @default("manual")
+  isActive       Boolean  @default(true)
+  redeemedKeyId  String?
+  redeemKey      RedeemKey? @relation(fields: [redeemedKeyId], references: [id], onDelete: SetNull)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model RedeemKey {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  tier        String   @default("basic")
+  description String   @default("")
+  maxUses     Int      @default(1)
+  currentUses Int      @default(0)
+  createdBy   String
+  isExpired   Boolean  @default(false)
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  whitelist   WhitelistEntry[]
+}

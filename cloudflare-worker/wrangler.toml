@@ -1,0 +1,25 @@
+name = "beulrock-edge"
+main = "src/index.ts"
+compatibility_date = "2024-05-29"
+
+# D1 Database for game logs
+[[d1_databases]]
+binding = "DB"
+database_name = "beulrock-logs"
+database_id = "your-d1-database-id"
+
+# KV Namespace for caching
+[[kv_namespaces]]
+binding = "KV"
+id = "your-kv-namespace-id"
+
+# Cron Triggers for scheduled cleanup
+[triggers]
+crons = ["* * * * *"]
+
+# Environment Variables
+[vars]
+BEULROCK_API = "https://your-beulrock-app.pages.dev"
+
+# Environment Secrets (set via CLI: wrangler secret put HMAC_SECRET)
+# HMAC_SECRET = set via wrangler secret put
