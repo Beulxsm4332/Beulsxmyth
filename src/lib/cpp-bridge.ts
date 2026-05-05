@@ -22,10 +22,7 @@
  * ============================================================================
  */
 
-import { execFile, spawn } from "child_process";
 import path from "path";
-import fs from "fs";
-import { executePipeline as tsExecutePipeline } from "./executor-engine";
 import type { TierKey } from "./tier";
 
 // ── Types ──
@@ -114,27 +111,42 @@ interface CppHealthResult {
   opensslVersion: string;
 }
 
+// ── Node.js built-in dynamic loader ──
+// Use dynamic imports for Node.js built-in modules to avoid
+// Turbopack bundling issues (child_process, fs are not available in browser)
+
+let _fs: typeof import("fs") | null = null;
+let _childProcess: typeof import("child_process") | null = null;
+let _nodeModulesLoaded = false;
+
+async function loadNodeModules(): Promise<boolean> {
+  if (_nodeModulesLoaded) return _fs !== null && _childProcess !== null;
+
+  _nodeModulesLoaded = true;
+  try {
+    _fs = await import("fs");
+    _childProcess = await import("child_process");
+    return true;
+  } catch {
+    console.warn("[CppBridge] Node.js built-in modules unavailable (normal on Vercel build)");
+    return false;
+  }
+}
+
 // ── Binary Path Resolution ──
 
 const ENGINE_BINARY_NAME =
-  process.platform === "win32" ? "beulrock-engine.exe" : "beulrock-engine";
+  typeof process !== "undefined" && process.platform === "win32"
+    ? "beulrock-engine.exe"
+    : "beulrock-engine";
 
 function resolveEnginePath(): string | null {
-  // Priority order for finding the C++ engine binary:
-  // 1. ENGINE_PATH environment variable
-  // 2. Project root core-engine/bin/
-  // 3. Project root core-engine/build/
-  // 4. /usr/local/bin/ (system install)
-
   const envPath = process.env.ENGINE_PATH;
-  if (envPath && fs.existsSync(envPath)) {
+  if (envPath && _fs && _fs.existsSync(envPath)) {
     return envPath;
   }
 
-  const projectRoot =
-    process.env.NODE_ENV === "production"
-      ? path.join(process.cwd())
-      : path.join(process.cwd());
+  const projectRoot = path.join(process.cwd());
 
   const candidates = [
     path.join(projectRoot, "core-engine", "bin", ENGINE_BINARY_NAME),
@@ -144,7 +156,7 @@ function resolveEnginePath(): string | null {
   ];
 
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
+    if (_fs && _fs.existsSync(candidate)) {
       return candidate;
     }
   }
@@ -185,6 +197,11 @@ const EXECUTION_TIMEOUT = 120000; // 120 seconds max for any C++ operation
 
 function callCppEngine(input: CppEngineInput): Promise<CppEngineOutput> {
   return new Promise((resolve, reject) => {
+    if (!_childProcess) {
+      reject(new Error("child_process module not available"));
+      return;
+    }
+
     const enginePath = getEnginePath();
     if (!enginePath) {
       reject(new Error("C++ engine binary not available"));
@@ -195,7 +212,7 @@ function callCppEngine(input: CppEngineInput): Promise<CppEngineOutput> {
     let stdout = "";
     let stderr = "";
 
-    const child = spawn(enginePath, ["--stdin"], {
+    const child = _childProcess.spawn(enginePath, ["--stdin"], {
       stdio: ["pipe", "pipe", "pipe"],
       timeout: EXECUTION_TIMEOUT,
     });
@@ -211,7 +228,7 @@ function callCppEngine(input: CppEngineInput): Promise<CppEngineOutput> {
     });
 
     // Handle completion
-    child.on("close", (code) => {
+    child.on("close", (code: number | null) => {
       if (code !== 0 && !stdout.trim()) {
         reject(
           new Error(
@@ -224,7 +241,7 @@ function callCppEngine(input: CppEngineInput): Promise<CppEngineOutput> {
       try {
         const output: CppEngineOutput = JSON.parse(stdout.trim());
         resolve(output);
-      } catch (err) {
+      } catch {
         reject(
           new Error(
             `Failed to parse C++ engine output: ${stdout.substring(0, 500)}`
@@ -234,7 +251,7 @@ function callCppEngine(input: CppEngineInput): Promise<CppEngineOutput> {
     });
 
     // Handle errors
-    child.on("error", (err) => {
+    child.on("error", (err: Error) => {
       reject(new Error(`C++ engine spawn error: ${err.message}`));
     });
 
@@ -261,6 +278,9 @@ export async function executeWithCppEngine(params: {
   result?: CppExecutionResult;
   error?: string;
 }> {
+  // Ensure Node.js modules are loaded
+  await loadNodeModules();
+
   // Try C++ engine first
   if (isCppEngineAvailable()) {
     try {
@@ -306,7 +326,7 @@ export async function executeWithCppEngine(params: {
     `[CppBridge] Using TypeScript engine for execution ${params.jobId}`
   );
 
-  // The TS engine handles its own DB/Redis updates via executePipeline
+  const { executePipeline: tsExecutePipeline } = await import("./executor-engine");
   await tsExecutePipeline({
     jobId: params.jobId,
     userId: params.userId,
@@ -331,6 +351,8 @@ export async function validateWithCppEngine(
   scriptSize?: number;
   sha256Hash?: string;
 }> {
+  await loadNodeModules();
+
   if (isCppEngineAvailable()) {
     try {
       const input: CppEngineInput = {
@@ -375,6 +397,8 @@ export async function runCppBenchmark(): Promise<{
   result?: CppBenchmarkResult;
   error?: string;
 }> {
+  await loadNodeModules();
+
   if (!isCppEngineAvailable()) {
     return {
       usedCppEngine: false,
@@ -408,6 +432,8 @@ export async function checkCppEngineHealth(): Promise<{
   result?: CppHealthResult;
   error?: string;
 }> {
+  await loadNodeModules();
+
   if (!isCppEngineAvailable()) {
     return { available: false, error: "C++ engine binary not found" };
   }
@@ -438,6 +464,8 @@ export async function getCppEngineStats(): Promise<{
   stats?: Record<string, unknown>;
   error?: string;
 }> {
+  await loadNodeModules();
+
   if (!isCppEngineAvailable()) {
     return { available: false, error: "C++ engine binary not found" };
   }
@@ -480,7 +508,7 @@ export function getEngineIntegrationInfo(): {
   return {
     cppAvailable: isCppEngineAvailable(),
     enginePath: getEnginePath(),
-    platform: process.platform,
-    arch: process.arch,
+    platform: typeof process !== "undefined" ? process.platform : "unknown",
+    arch: typeof process !== "undefined" ? process.arch : "unknown",
   };
 }

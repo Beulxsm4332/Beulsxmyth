@@ -1,33 +1,64 @@
-import { WebSocketServer, WebSocket } from "ws";
+/**
+ * Beulrock WebSocket Server
+ * 
+ * Uses dynamic imports for the `ws` module so it doesn't cause
+ * build failures on Turbopack/Vercel where native Node.js modules
+ * can't be bundled at build time.
+ * 
+ * On Vercel serverless, the WebSocket server simply never starts
+ * and all broadcast functions are safe no-ops.
+ * 
+ * IMPORTANT: This file intentionally avoids ANY static reference to
+ * the "ws" module — even in type annotations — because Turbopack
+ * will try to resolve the module during build otherwise.
+ */
+
 import http from "http";
 import { db } from "./db";
 import { redis, redisGetStats } from "./redis";
+import { loadWs } from "./ws-wrapper";
+
+// ── Types (no ws module references!) ──
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type WSServer = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type WSClient = any;
 
 interface AuthenticatedClient {
-  ws: WebSocket;
+  ws: WSClient;
   userId: string;
   tier: string;
   channels: Set<string>;
 }
 
-const clients = new Map<WebSocket, AuthenticatedClient>();
-let wss: WebSocketServer | null = null;
+// ── State ──
+
+const clients = new Map<WSClient, AuthenticatedClient>();
+let wss: WSServer | null = null;
 let statsInterval: ReturnType<typeof setInterval> | null = null;
 
-export function startWebSocketServer(port: number = 3033): WebSocketServer {
+// ── Public API ──
+
+export async function startWebSocketServer(port: number = 3033): Promise<WSServer | null> {
   if (wss) return wss;
 
+  const wsMod = await loadWs();
+  if (!wsMod) {
+    console.log("[WS] Skipping WebSocket server startup (ws module unavailable — normal on Vercel)");
+    return null;
+  }
+
+  const { WebSocketServer } = wsMod;
   const server = http.createServer();
   wss = new WebSocketServer({ server });
 
-  wss.on("connection", (ws, req) => {
+  wss.on("connection", (ws: WSClient, req: http.IncomingMessage) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
-    const token = url.searchParams.get("token");
 
-    // For now, accept connections and authenticate via first message
     console.log(`[WS] New connection from ${req.socket.remoteAddress}`);
 
-    ws.on("message", async (raw) => {
+    ws.on("message", async (raw: Buffer) => {
       try {
         const msg = JSON.parse(raw.toString());
 
@@ -47,7 +78,6 @@ export function startWebSocketServer(port: number = 3033): WebSocketServer {
             };
             clients.set(ws, client);
 
-            // Send auth confirmation
             ws.send(JSON.stringify({
               channel: "auth",
               data: { status: "authenticated", userId: user.id, tier: user.tier },
@@ -90,7 +120,7 @@ export function startWebSocketServer(port: number = 3033): WebSocketServer {
       clients.delete(ws);
     });
 
-    ws.on("error", (err) => {
+    ws.on("error", (err: Error) => {
       console.error("[WS] Client error:", err.message);
       clients.delete(ws);
     });
@@ -130,21 +160,21 @@ export function startWebSocketServer(port: number = 3033): WebSocketServer {
 export function stopWebSocketServer(): void {
   if (statsInterval) clearInterval(statsInterval);
   if (wss) {
-    wss.clients.forEach((ws) => ws.close(1001, "Server shutting down"));
+    wss.clients.forEach((ws: WSClient) => ws.close(1001, "Server shutting down"));
     wss.close();
     wss = null;
   }
 }
 
-// Broadcast to specific channel (safe no-op when WS server is not running, e.g. on Vercel)
+// Broadcast to specific channel (safe no-op when WS server is not running)
 export function broadcastToChannel(channel: string, data: Record<string, unknown>): void {
-  if (!wss || clients.size === 0) return; // No-op on serverless/Vercel
+  if (!wss || clients.size === 0) return;
 
   const message = JSON.stringify({ channel, data });
   let sent = 0;
 
   clients.forEach((client) => {
-    if (client.channels.has(channel) && client.ws.readyState === WebSocket.OPEN) {
+    if (client.channels.has(channel) && client.ws.readyState === 1) {
       try {
         client.ws.send(message);
         sent++;
@@ -161,12 +191,12 @@ export function broadcastToChannel(channel: string, data: Record<string, unknown
 
 // Broadcast to specific user (safe no-op when WS server is not running)
 export function broadcastToUser(userId: string, channel: string, data: Record<string, unknown>): void {
-  if (!wss || clients.size === 0) return; // No-op on serverless/Vercel
+  if (!wss || clients.size === 0) return;
 
   const message = JSON.stringify({ channel, data });
 
   clients.forEach((client) => {
-    if (client.userId === userId && client.ws.readyState === WebSocket.OPEN) {
+    if (client.userId === userId && client.ws.readyState === 1) {
       try {
         client.ws.send(message);
       } catch (err) {
@@ -178,6 +208,8 @@ export function broadcastToUser(userId: string, channel: string, data: Record<st
 
 // Broadcast system stats to all connected clients
 async function broadcastSystemStats(): Promise<void> {
+  if (!wss || clients.size === 0) return;
+
   try {
     const [gameCount, serverCount, runningCount, totalExecutions, failedExecutions] = await Promise.all([
       db.game.count().catch(() => 142),
@@ -191,7 +223,6 @@ async function broadcastSystemStats(): Promise<void> {
       ? parseFloat((((totalExecutions - failedExecutions) / totalExecutions) * 100).toFixed(1))
       : 99.8;
 
-    // Generate realistic performance data
     const now = Date.now();
     const latency: number[] = [];
     const frequency: number[] = [];
@@ -225,6 +256,8 @@ async function broadcastSystemStats(): Promise<void> {
 
 // Broadcast server status
 async function broadcastServerStatus(): Promise<void> {
+  if (!wss || clients.size === 0) return;
+
   try {
     const servers = await db.server.findMany({
       where: { status: "online" },

@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Vercel handles its own output mode — do NOT set output: "standalone"
+  serverExternalPackages: ["ws", "bullmq", "ioredis", "bcryptjs"],
   typescript: {
     ignoreBuildErrors: true,
   },

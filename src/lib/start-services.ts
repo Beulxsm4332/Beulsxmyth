@@ -35,9 +35,13 @@ export async function startAllServices(): Promise<void> {
   try {
     const wsPort = parseInt(process.env.WS_PORT || "3033", 10);
 
-    // Start WebSocket server
-    startWebSocketServer(wsPort);
-    console.log("[Services] WebSocket server started");
+    // Start WebSocket server (async because ws is dynamically loaded)
+    const wsServer = await startWebSocketServer(wsPort);
+    if (wsServer) {
+      console.log("[Services] WebSocket server started");
+    } else {
+      console.log("[Services] WebSocket server not started (ws module unavailable)");
+    }
 
     // Start BullMQ worker
     try {
