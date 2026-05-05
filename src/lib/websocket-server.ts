@@ -136,8 +136,10 @@ export function stopWebSocketServer(): void {
   }
 }
 
-// Broadcast to specific channel
+// Broadcast to specific channel (safe no-op when WS server is not running, e.g. on Vercel)
 export function broadcastToChannel(channel: string, data: Record<string, unknown>): void {
+  if (!wss || clients.size === 0) return; // No-op on serverless/Vercel
+
   const message = JSON.stringify({ channel, data });
   let sent = 0;
 
@@ -157,8 +159,10 @@ export function broadcastToChannel(channel: string, data: Record<string, unknown
   }
 }
 
-// Broadcast to specific user
+// Broadcast to specific user (safe no-op when WS server is not running)
 export function broadcastToUser(userId: string, channel: string, data: Record<string, unknown>): void {
+  if (!wss || clients.size === 0) return; // No-op on serverless/Vercel
+
   const message = JSON.stringify({ channel, data });
 
   clients.forEach((client) => {

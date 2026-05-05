@@ -1,0 +1,44 @@
+# Build artifacts
+build/
+cmake-build-*/
+bin/
+out/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled binaries
+beulrock-engine
+beulrock-engine.exe
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Vendored dependency (downloaded by CI, not committed if large)
+# Uncomment if you do NOT want to track the single header:
+# include/nlohmann/json.hpp
+
+# Package managers
+vcpkg_installed/
+conan/

@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ──────────────────────────────────────────────
+  # C++ Engine Build Matrix
+  # ──────────────────────────────────────────────
+  cpp-build:
+    name: C++ Build (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: ubuntu-x64
+            runner: ubuntu-latest
+            cmake_generator: "Unix Makefiles"
+            artifact_suffix: linux-x64
+          - name: ubuntu-arm64
+            runner: ubuntu-24.04-arm
+            cmake_generator: "Unix Makefiles"
+            artifact_suffix: linux-arm64
+          - name: macos
+            runner: macos-latest
+            cmake_generator: "Unix Makefiles"
+            artifact_suffix: macos
+          - name: windows
+            runner: windows-latest
+            cmake_generator: "Visual Studio 17 2022"
+            artifact_suffix: windows-x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Ubuntu ──
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev cmake nlohmann-json3-dev build-essential
+
+      # ── macOS ──
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake openssl
+
+      - name: Configure CMake (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -B core-engine/build -S core-engine \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)"
+
+      # ── Windows ──
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake openssl -y
+          vcpkg install nlohmann-json --triplet x64-windows
+
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B core-engine/build -S core-engine `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      # ── Ubuntu configure ──
+      - name: Configure CMake (Ubuntu)
+        if: runner.os == 'Linux'
+        run: cmake -B core-engine/build -S core-engine -DCMAKE_BUILD_TYPE=Release
+
+      # ── Build ──
+      - name: Build C++ engine
+        run: cmake --build core-engine/build --config Release --parallel
+
+      - name: Package artifacts
+        id: package
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ARTIFACT_DIR="release-${{ matrix.platform.artifact_suffix }}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp -r core-engine/build/Release/* "$ARTIFACT_DIR/" || true
+          else
+            cp -r core-engine/build/* "$ARTIFACT_DIR/" || true
+          fi
+
+          tar -czf "beulrock-engine-${TAG}-${{ matrix.platform.artifact_suffix }}.tar.gz" "$ARTIFACT_DIR"
+
+          echo "archive=beulrock-engine-${TAG}-${{ matrix.platform.artifact_suffix }}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform.artifact_suffix }}
+          path: ${{ steps.package.outputs.archive }}
+          retention-days: 5
+
+  # ──────────────────────────────────────────────
+  # GitHub Release
+  # ──────────────────────────────────────────────
+  github-release:
+    name: Create GitHub Release
+    needs: cpp-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: release-*
+          merge-multiple: false
+
+      - name: Collect archives
+        id: collect
+        run: |
+          mkdir -p dist
+          find release-artifacts -name "beulrock-engine-*.tar.gz" -exec cp {} dist/ \;
+          ls -la dist/
+          # Generate checksums
+          cd dist
+          sha256sum *.tar.gz > checksums-sha256.txt
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          ls -1 *.tar.gz checksums-sha256.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^$TAG$" | head -1 || echo "")
+
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log "$PREV_TAG..$TAG" --pretty=format:"- %s (%h)" --no-merges 2>/dev/null || echo "No changelog available")
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -20 2>/dev/null || echo "Initial release")
+          fi
+
+          # Write to file for multiline support
+          echo "$CHANGELOG" > /tmp/changelog.txt
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: "Beulrock Engine ${{ steps.changelog.outputs.tag }}"
+          body_path: /tmp/changelog.txt
+          draft: false
+          prerelease: ${{ contains(steps.changelog.outputs.tag, 'rc') || contains(steps.changelog.outputs.tag, 'beta') || contains(steps.changelog.outputs.tag, 'alpha') }}
+          files: |
+            dist/*.tar.gz
+            dist/checksums-sha256.txt
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

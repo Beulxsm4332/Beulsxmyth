@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "*"]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Node.js / Next.js CI
+  # ──────────────────────────────────────────────
+  nodejs-ci:
+    name: Node.js CI (Lint · TypeCheck · Build · Prisma)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: "postgresql://ci:ci@localhost:5432/beulrock_ci"
+      DIRECT_URL: "postgresql://ci:ci@localhost:5432/beulrock_ci"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: beulrock_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ci"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prisma generate
+        run: bunx prisma generate
+
+      - name: Prisma db push
+        run: bunx prisma db push --skip-generate
+        env:
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/beulrock_ci"
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Type check
+        run: bunx tsc --noEmit
+
+      - name: Build Next.js
+        run: bun run build
+        env:
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/beulrock_ci"
+
+  # ──────────────────────────────────────────────
+  # C++ Engine Build Matrix
+  # ──────────────────────────────────────────────
+  cpp-build:
+    name: C++ Build (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: ubuntu-x64
+            runner: ubuntu-latest
+            cmake_generator: "Unix Makefiles"
+            artifact_suffix: linux-x64
+          - name: ubuntu-arm64
+            runner: ubuntu-24.04-arm
+            cmake_generator: "Unix Makefiles"
+            artifact_suffix: linux-arm64
+          - name: macos
+            runner: macos-latest
+            cmake_generator: "Unix Makefiles"
+            artifact_suffix: macos
+          - name: windows
+            runner: windows-latest
+            cmake_generator: "Visual Studio 17 2022"
+            artifact_suffix: windows-x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Ubuntu ──
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev cmake nlohmann-json3-dev build-essential
+
+      # ── macOS ──
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake openssl
+
+      - name: Configure CMake (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -B core-engine/build -S core-engine \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)"
+
+      # ── Windows ──
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake openssl -y
+          vcpkg install nlohmann-json --triplet x64-windows
+
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B core-engine/build -S core-engine `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      # ── Ubuntu configure ──
+      - name: Configure CMake (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -B core-engine/build -S core-engine \
+            -DCMAKE_BUILD_TYPE=Release
+
+      # ── Build ──
+      - name: Build C++ engine
+        run: cmake --build core-engine/build --config Release --parallel
+
+      - name: Locate artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo "path=core-engine/build/Release" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=core-engine/build" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload C++ artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-engine-${{ matrix.platform.artifact_suffix }}
+          path: ${{ steps.artifacts.outputs.path }}
+          retention-days: 7
+          if-no-files-found: warn
