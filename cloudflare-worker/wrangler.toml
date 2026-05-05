@@ -19,7 +19,7 @@ crons = ["* * * * *"]
 
 # Environment Variables
 [vars]
-BEULROCK_API = "https://your-beulrock-app.pages.dev"
+BEULROCK_API = "https://salbjork.web.id"
 
 # Environment Secrets (set via CLI: wrangler secret put HMAC_SECRET)
 # HMAC_SECRET = set via wrangler secret put
